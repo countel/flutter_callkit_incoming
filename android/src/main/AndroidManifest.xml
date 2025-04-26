@@ -5,18 +5,22 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <application>
 
         <activity
             android:name="com.hiennv.flutter_callkit_incoming.CallkitIncomingActivity"
+            android:taskAffinity="com.hiennv.flutter_callkit_incoming.INCOMING_CALL_AFFINITY"
             android:excludeFromRecents="true"
-            android:screenOrientation="portrait"
-            android:showOnLockScreen="true"
-            android:launchMode="singleTask"
+            android:noHistory="true"
             android:turnScreenOn="true"
-            android:exported="true"
+            android:configChanges="orientation"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:allowTaskReparenting="false"
             android:theme="@style/CallkitIncomingTheme">
             <intent-filter>
                 <action android:name="${applicationId}.com.hiennv.flutter_callkit_incoming.ACTION_CALL_INCOMING" />
@@ -45,6 +49,12 @@
             android:enabled="true"
             android:exported="true"
             android:name="com.hiennv.flutter_callkit_incoming.CallkitSoundPlayerService"/>
+
+        <service
+            android:enabled="true"
+            android:exported="true"
+            android:foregroundServiceType="phoneCall"
+            android:name="com.hiennv.flutter_callkit_incoming.OngoingNotificationService"/>
 
     </application>
 </manifest>

@@ -3,66 +3,83 @@ package com.hiennv.flutter_callkit_incoming
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.annotation.NonNull
-import androidx.annotation.Nullable
-
+import com.hiennv.flutter_callkit_incoming.Utils.Companion.reapCollection
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
-import io.flutter.plugin.common.BinaryMessenger
-import io.flutter.plugin.common.EventChannel
-import io.flutter.plugin.common.MethodCall
-import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.*
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import java.lang.ref.WeakReference
+
 
 /** FlutterCallkitIncomingPlugin */
-class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
+class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityAware,
+    PluginRegistry.RequestPermissionsResultListener {
     companion object {
+
+        const val EXTRA_CALLKIT_CALL_DATA = "EXTRA_CALLKIT_CALL_DATA"
+
         @SuppressLint("StaticFieldLeak")
-        private var instance: FlutterCallkitIncomingPlugin? = null
+        private lateinit var instance: FlutterCallkitIncomingPlugin
 
         public fun getInstance(): FlutterCallkitIncomingPlugin {
-            if (instance == null) {
-                instance = FlutterCallkitIncomingPlugin()
-            }
-            return instance!!
+            return instance
         }
 
         public fun hasInstance(): Boolean {
-            return instance != null
+            return ::instance.isInitialized
         }
 
-        private val eventHandler = EventCallbackHandler()
+        private val methodChannels = mutableMapOf<BinaryMessenger, MethodChannel>()
+        private val eventChannels = mutableMapOf<BinaryMessenger, EventChannel>()
+        private val eventHandlers = mutableListOf<WeakReference<EventCallbackHandler>>()
 
         fun sendEvent(event: String, body: Map<String, Any>) {
-            eventHandler.send(event, body)
-        }
-
-        fun sharePluginWithRegister(
-            @NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding,
-            @Nullable handler: MethodCallHandler?
-        ) {
-            initSharedInstance(flutterPluginBinding.applicationContext, flutterPluginBinding.binaryMessenger, handler)
-        }
-
-        private fun initSharedInstance(
-            @NonNull context: Context,
-            @NonNull binaryMessenger: BinaryMessenger,
-            @Nullable handler: MethodCallHandler?
-        ) {
-            if (instance == null) {
-                instance = FlutterCallkitIncomingPlugin()
+            eventHandlers.reapCollection().forEach {
+                it.get()?.send(event, body)
             }
-            instance!!.context = context
-            instance!!.callkitNotificationManager = CallkitNotificationManager(context)
-            instance!!.channel = MethodChannel(binaryMessenger, "flutter_callkit_incoming")
-            instance!!.channel?.setMethodCallHandler(handler ?: instance!!)
-            instance!!.events = EventChannel(binaryMessenger, "flutter_callkit_incoming_events")
-            instance!!.events?.setStreamHandler(eventHandler)
         }
+
+        public fun sendEventCustom(event: String, body: Map<String, Any>) {
+            eventHandlers.reapCollection().forEach {
+                it.get()?.send(event, body)
+            }
+        }
+
+
+        fun sharePluginWithRegister(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+            initSharedInstance(
+                flutterPluginBinding.applicationContext,
+                flutterPluginBinding.binaryMessenger
+            )
+        }
+
+        fun initSharedInstance(context: Context, binaryMessenger: BinaryMessenger) {
+            if (!::instance.isInitialized) {
+                instance = FlutterCallkitIncomingPlugin()
+                instance.callkitNotificationManager = CallkitNotificationManager(context)
+                instance.context = context
+            }
+
+            val channel = MethodChannel(binaryMessenger, "flutter_callkit_incoming")
+            methodChannels[binaryMessenger] = channel
+            channel.setMethodCallHandler(instance)
+
+            val events = EventChannel(binaryMessenger, "flutter_callkit_incoming_events")
+            eventChannels[binaryMessenger] = events
+            val handler = EventCallbackHandler()
+            eventHandlers.add(WeakReference(handler))
+            events.setStreamHandler(handler)
+
+        }
+
     }
 
     /// The MethodChannel that will the communication between Flutter and native Android
@@ -72,18 +89,9 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
     private var activity: Activity? = null
     private var context: Context? = null
     private var callkitNotificationManager: CallkitNotificationManager? = null
-    private var channel: MethodChannel? = null
-    private var events: EventChannel? = null
 
-    override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
-        this.context = flutterPluginBinding.applicationContext
-        callkitNotificationManager = CallkitNotificationManager(flutterPluginBinding.applicationContext)
-        channel = MethodChannel(flutterPluginBinding.binaryMessenger, "flutter_callkit_incoming")
-        channel?.setMethodCallHandler(this)
-        events =
-            EventChannel(flutterPluginBinding.binaryMessenger, "flutter_callkit_incoming_events")
-        events?.setStreamHandler(eventHandler)
-        sharePluginWithRegister(flutterPluginBinding, this)
+    override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+        sharePluginWithRegister(flutterPluginBinding)
     }
 
     public fun showIncomingNotification(data: Data) {
@@ -133,15 +141,17 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         removeAllCalls(context)
     }
 
-    public fun sendEventCustom(event: String, body: Map<String, Any>) {
-        eventHandler.send(event, body)
+    public fun sendEventCustom(body: Map<String, Any>) {
+        eventHandlers.reapCollection().forEach {
+            it.get()?.send(CallkitConstants.ACTION_CALL_CUSTOM, body)
+        }
     }
 
     override fun onMethodCall(@NonNull call: MethodCall, @NonNull result: Result) {
         try {
             when (call.method) {
                 "showCallkitIncoming" -> {
-                    val data = Data(call.arguments() ?: HashMap<String, Any?>())
+                    val data = Data(call.arguments() ?: HashMap())
                     data.from = "notification"
                     //send BroadcastReceiver
                     context?.sendBroadcast(
@@ -150,34 +160,80 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                             data.toBundle()
                         )
                     )
+
                     result.success("OK")
                 }
+
+                "showCallkitIncomingSilently" -> {
+                    val data = Data(call.arguments() ?: HashMap())
+                    data.from = "notification"
+
+                    result.success("OK")
+                }
+
                 "showMissCallNotification" -> {
-                    val data = Data(call.arguments() ?: HashMap<String, Any?>())
+                    val data = Data(call.arguments() ?: HashMap())
                     data.from = "notification"
                     callkitNotificationManager?.showMissCallNotification(data.toBundle())
                     result.success("OK")
                 }
+
                 "startCall" -> {
-                    val data = Data(call.arguments() ?: HashMap<String, Any?>())
+                    val data = Data(call.arguments() ?: HashMap())
                     context?.sendBroadcast(
                         CallkitIncomingBroadcastReceiver.getIntentStart(
                             requireNotNull(context),
                             data.toBundle()
                         )
                     )
+
                     result.success("OK")
                 }
+
+                "muteCall" -> {
+                    val map = buildMap {
+                        val args = call.arguments
+                        if (args is Map<*, *>) {
+                            putAll(args as Map<String, Any>)
+                        }
+                    }
+                    sendEvent(CallkitConstants.ACTION_CALL_TOGGLE_MUTE, map)
+
+                    result.success("OK")
+                }
+
+                "holdCall" -> {
+                    val map = buildMap {
+                        val args = call.arguments
+                        if (args is Map<*, *>) {
+                            putAll(args as Map<String, Any>)
+                        }
+                    }
+                    sendEvent(CallkitConstants.ACTION_CALL_TOGGLE_HOLD, map)
+
+                    result.success("OK")
+                }
+
+                "isMuted" -> {
+                    result.success(false)
+                }
+
                 "endCall" -> {
-                    val data = Data(call.arguments() ?: HashMap<String, Any?>())
+                    val data = Data(call.arguments() ?: HashMap())
                     context?.sendBroadcast(
                         CallkitIncomingBroadcastReceiver.getIntentEnded(
                             requireNotNull(context),
                             data.toBundle()
                         )
                     )
+
                     result.success("OK")
                 }
+
+                "callConnected" -> {
+                    result.success("OK")
+                }
+
                 "endAllCalls" -> {
                     val calls = getDataActiveCalls(context)
                     calls.forEach {
@@ -200,11 +256,47 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
                     removeAllCalls(context)
                     result.success("OK")
                 }
+
                 "activeCalls" -> {
                     result.success(getDataActiveCallsForFlutter(context))
                 }
+
                 "getDevicePushTokenVoIP" -> {
                     result.success("")
+                }
+
+                "silenceEvents" -> {
+                    val silence = call.arguments as? Boolean ?: false
+                    CallkitIncomingBroadcastReceiver.silenceEvents = silence
+                    result.success("")
+                }
+
+                "requestNotificationPermission" -> {
+                    val map = buildMap {
+                        val args = call.arguments
+                        if (args is Map<*, *>) {
+                            putAll(args as Map<String, Any>)
+                        }
+                    }
+                    callkitNotificationManager?.requestNotificationPermission(activity, map)
+                }
+
+                "requestFullIntentPermission" -> {
+                    callkitNotificationManager?.requestFullIntentPermission(activity)
+                }
+                // EDIT - clear the incoming notification/ring (after accept/decline/timeout)
+                "hideCallkitIncoming" -> {
+                    val data = Data(call.arguments() ?: HashMap())
+                    context?.stopService(Intent(context, CallkitSoundPlayerService::class.java))
+                    callkitNotificationManager?.clearIncomingNotification(data.toBundle(), false)
+                }
+
+                "endNativeSubsystemOnly" -> {
+
+                }
+
+                "setAudioRoute" -> {
+
                 }
             }
         } catch (error: Exception) {
@@ -212,24 +304,29 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
         }
     }
 
-    override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
-        channel?.setMethodCallHandler(null)
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        methodChannels.remove(binding.binaryMessenger)?.setMethodCallHandler(null)
+        eventChannels.remove(binding.binaryMessenger)?.setStreamHandler(null)
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
-        this.activity = binding.activity
-        this.context = binding.activity.applicationContext
+        instance.context = binding.activity.applicationContext
+        instance.activity = binding.activity
+        binding.addRequestPermissionsResultListener(this)
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-        this.activity = binding.activity
-        this.context = binding.activity.applicationContext
+        instance.context = binding.activity.applicationContext
+        instance.activity = binding.activity
+        binding.addRequestPermissionsResultListener(this)
     }
 
-    override fun onDetachedFromActivity() {}
+    override fun onDetachedFromActivity() {
+
+    }
 
     class EventCallbackHandler : EventChannel.StreamHandler {
 
@@ -253,4 +350,19 @@ class FlutterCallkitIncomingPlugin : FlutterPlugin, MethodCallHandler, ActivityA
             eventSink = null
         }
     }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ): Boolean {
+        instance.callkitNotificationManager?.onRequestPermissionsResult(
+            instance.activity,
+            requestCode,
+            grantResults
+        )
+        return true
+    }
+
+
 }
